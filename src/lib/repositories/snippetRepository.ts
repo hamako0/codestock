@@ -1,10 +1,12 @@
 import { loadState, saveState } from "../storage/localDb";
 import { DEFAULT_SNIPPET_LANGUAGE } from "../constants";
-import { generateId, normalizeTagName } from "../utils";
+import { base64ToText, generateId, normalizeTagName, textToBase64 } from "../utils";
 import type {
   Attachment,
   ClipboardAttachmentDraft,
   CreateSnippetInput,
+  PortableExportResult,
+  PortableImportResult,
   SearchSnippetsInput,
   Snippet,
   Tag,
@@ -19,6 +21,16 @@ export interface SnippetRepository {
   listTags(keyword: string): Promise<Tag[]>;
   attachImageFromClipboard(draft: ClipboardAttachmentDraft, snippetId: string): Promise<Snippet>;
   getSnippetById(id: string): Promise<Snippet | null>;
+  exportPortableData(): Promise<PortableExportResult>;
+  importPortableData(bytesBase64: string): Promise<PortableImportResult>;
+}
+
+interface BrowserExportBundle {
+  format: "codestock-browser-json";
+  version: 1;
+  exportedAt: string;
+  snippets: Snippet[];
+  attachmentPayloads: Record<string, string>;
 }
 
 function dedupeTags(tagNames: string[]): Tag[] {
@@ -153,6 +165,54 @@ export async function readAttachmentPreviewSrc(attachment: Attachment): Promise<
   return `data:${attachment.mimeType};base64,${base64}`;
 }
 
+function exportBrowserData(): PortableExportResult {
+  const state = loadState();
+  const attachmentPayloads: Record<string, string> = {};
+
+  for (const snippet of state.snippets) {
+    for (const attachment of snippet.attachments) {
+      const payload = window.localStorage.getItem(`codestock:attachment:${attachment.id}`);
+      if (payload) {
+        attachmentPayloads[attachment.id] = payload;
+      }
+    }
+  }
+
+  const bundle: BrowserExportBundle = {
+    format: "codestock-browser-json",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    snippets: state.snippets,
+    attachmentPayloads
+  };
+  const bytesBase64 = textToBase64(JSON.stringify(bundle, null, 2));
+
+  return {
+    fileName: `codestock-browser-export-${Date.now()}.json`,
+    bytesBase64,
+    mimeType: "application/json",
+    snippetCount: state.snippets.length,
+    attachmentCount: Object.keys(attachmentPayloads).length
+  };
+}
+
+function importBrowserData(bytesBase64: string): PortableImportResult {
+  const bundle = JSON.parse(base64ToText(bytesBase64)) as BrowserExportBundle;
+  if (bundle.format !== "codestock-browser-json" || bundle.version !== 1) {
+    throw new Error("This import file is supported by the desktop app only.");
+  }
+
+  saveState({ snippets: bundle.snippets.map(normalizeSnippet) });
+  for (const [attachmentId, payload] of Object.entries(bundle.attachmentPayloads)) {
+    window.localStorage.setItem(`codestock:attachment:${attachmentId}`, payload);
+  }
+
+  return {
+    importedSnippets: bundle.snippets.length,
+    importedAttachments: Object.keys(bundle.attachmentPayloads).length
+  };
+}
+
 export function createSnippetRepository(): SnippetRepository {
   const nativeBridge = isTauriRuntime() ? createNativeSnippetBridge() : null;
 
@@ -246,6 +306,20 @@ export function createSnippetRepository(): SnippetRepository {
 
     async getSnippetById(id) {
       return loadState().snippets.find((snippet) => snippet.id === id) ?? null;
+    },
+
+    async exportPortableData() {
+      if (nativeBridge) {
+        return nativeBridge.exportPortableData();
+      }
+      return exportBrowserData();
+    },
+
+    async importPortableData(bytesBase64) {
+      if (nativeBridge) {
+        return nativeBridge.importPortableData(bytesBase64);
+      }
+      return importBrowserData(bytesBase64);
     }
   };
 }

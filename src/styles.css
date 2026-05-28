@@ -60,6 +60,7 @@ button {
 }
 
 .heroMetrics div,
+.portabilityPanel,
 .panel {
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(24, 34, 47, 0.08);
@@ -68,8 +69,26 @@ button {
   border-radius: 24px;
 }
 
+.heroSide {
+  display: grid;
+  gap: 12px;
+}
+
 .heroMetrics div {
   padding: 16px;
+}
+
+.portabilityPanel {
+  padding: 14px;
+}
+
+.hiddenFileInput {
+  display: none;
+}
+
+.portabilityStatus {
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .heroMetrics strong {

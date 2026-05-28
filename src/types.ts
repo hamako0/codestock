@@ -72,3 +72,17 @@ export interface ClipboardAttachmentDraft {
   width?: number;
   height?: number;
 }
+
+export interface PortableExportResult {
+  fileName: string;
+  filePath?: string;
+  bytesBase64: string;
+  mimeType: string;
+  snippetCount: number;
+  attachmentCount: number;
+}
+
+export interface PortableImportResult {
+  importedSnippets: number;
+  importedAttachments: number;
+}

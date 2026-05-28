@@ -11,6 +11,9 @@ build/
 # Vite
 .vite/
 
+# Local verification output
+.playwright-mcp/
+
 # Tauri / Rust
 src-tauri/target/
 src-tauri/gen/

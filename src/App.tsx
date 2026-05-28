@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { DataPortability } from "./components/DataPortability";
 import { SnippetComposer } from "./components/SnippetComposer";
 import { SnippetList } from "./components/SnippetList";
 import { SnippetPreview } from "./components/SnippetPreview";
@@ -26,19 +27,25 @@ export function App() {
             shape from the start.
           </p>
         </div>
-        <div className="heroMetrics">
-          <div>
-            <strong>{stock.snippets.length}</strong>
-            <span>Snippets</span>
+        <div className="heroSide">
+          <div className="heroMetrics">
+            <div>
+              <strong>{stock.snippets.length}</strong>
+              <span>Snippets</span>
+            </div>
+            <div>
+              <strong>{stock.availableTags.length}</strong>
+              <span>Tags</span>
+            </div>
+            <div>
+              <strong>{stock.selectedSnippet?.attachments.length ?? 0}</strong>
+              <span>Images</span>
+            </div>
           </div>
-          <div>
-            <strong>{stock.availableTags.length}</strong>
-            <span>Tags</span>
-          </div>
-          <div>
-            <strong>{stock.selectedSnippet?.attachments.length ?? 0}</strong>
-            <span>Images</span>
-          </div>
+          <DataPortability
+            onExportData={stock.exportPortableData}
+            onImportData={stock.importPortableData}
+          />
         </div>
       </section>
 

@@ -3,6 +3,8 @@ import { createSnippetRepository } from "../lib/repositories/snippetRepository";
 import type {
   ClipboardAttachmentDraft,
   CreateSnippetInput,
+  PortableExportResult,
+  PortableImportResult,
   Snippet,
   SnippetSort,
   Tag,
@@ -63,6 +65,19 @@ export function useCodeStock() {
     setAvailableTags(await repository.listTags(keyword));
   }
 
+  async function exportPortableData(): Promise<PortableExportResult> {
+    return repository.exportPortableData();
+  }
+
+  async function importPortableData(bytesBase64: string): Promise<PortableImportResult> {
+    const result = await repository.importPortableData(bytesBase64);
+    setQuery("");
+    setSelectedTags([]);
+    setSelectedSnippetId(null);
+    await reload("", [], sort);
+    return result;
+  }
+
   const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
 
   return {
@@ -84,6 +99,8 @@ export function useCodeStock() {
     reload,
     createSnippet,
     updateSnippet,
-    attachImageFromClipboard
+    attachImageFromClipboard,
+    exportPortableData,
+    importPortableData
   };
 }

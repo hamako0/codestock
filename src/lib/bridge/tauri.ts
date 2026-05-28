@@ -1,6 +1,8 @@
 import type {
   ClipboardAttachmentDraft,
   CreateSnippetInput,
+  PortableExportResult,
+  PortableImportResult,
   SearchSnippetsInput,
   Snippet,
   Tag,
@@ -44,6 +46,8 @@ export interface NativeSnippetBridge {
   listTags(keyword: string): Promise<Tag[]>;
   attachImageFromClipboard(draft: ClipboardAttachmentDraft, snippetId: string): Promise<Snippet>;
   readAttachmentBase64(filePath: string): Promise<string>;
+  exportPortableData(): Promise<PortableExportResult>;
+  importPortableData(bytesBase64: string): Promise<PortableImportResult>;
 }
 
 export function createNativeSnippetBridge(): NativeSnippetBridge {
@@ -92,6 +96,22 @@ export function createNativeSnippetBridge(): NativeSnippetBridge {
         throw new Error("Tauri bridge unavailable");
       }
       return base64;
+    },
+    async exportPortableData() {
+      const result = await invokeIfAvailable<PortableExportResult>("export_portable_data");
+      if (!result) {
+        throw new Error("Tauri bridge unavailable");
+      }
+      return result;
+    },
+    async importPortableData(bytesBase64) {
+      const result = await invokeIfAvailable<PortableImportResult>("import_portable_data", {
+        bytesBase64
+      });
+      if (!result) {
+        throw new Error("Tauri bridge unavailable");
+      }
+      return result;
     }
   };
 }

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -17,6 +18,7 @@ const SCHEMA_SQL: &str = include_str!("../db/schema.sql");
 struct AppState {
     db_path: PathBuf,
     attachments_dir: PathBuf,
+    exports_dir: PathBuf,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -97,6 +99,45 @@ struct ClipboardAttachmentDraft {
     bytes_base64: String,
     width: Option<i64>,
     height: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PortableExportBundle {
+    format: String,
+    version: i64,
+    exported_at: String,
+    snippets: Vec<Snippet>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PortableExportResult {
+    file_name: String,
+    file_path: String,
+    bytes_base64: String,
+    mime_type: String,
+    snippet_count: usize,
+    attachment_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PortableImportResult {
+    imported_snippets: usize,
+    imported_attachments: usize,
+}
+
+struct StoredZipEntry {
+    name: String,
+    bytes: Vec<u8>,
+}
+
+struct ZipCentralRecord {
+    name: Vec<u8>,
+    crc32: u32,
+    size: u32,
+    offset: u32,
 }
 
 struct DbLock(Mutex<()>);
@@ -463,6 +504,279 @@ fn detect_extension(mime_type: &str, file_name: &str) -> &str {
     }
 }
 
+fn sanitize_file_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric()
+                || matches!(character, '.' | '-' | '_')
+            {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+
+    let trimmed = sanitized.trim_matches('.');
+    if trimmed.is_empty() {
+        "attachment.bin".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_zip_path(value: &str) -> String {
+    value.replace('\\', "/").trim_start_matches('/').to_string()
+}
+
+fn zip_file_name(zip_path: &str) -> Option<String> {
+    normalize_zip_path(zip_path)
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .map(sanitize_file_name)
+}
+
+fn push_u16(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
+    let slice = bytes
+        .get(offset..offset + 2)
+        .ok_or_else(|| "Invalid zip file".to_string())?;
+    Ok(u16::from_le_bytes([slice[0], slice[1]]))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| "Invalid zip file".to_string())?;
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn to_u16(value: usize, label: &str) -> Result<u16, String> {
+    u16::try_from(value).map_err(|_| format!("{label} is too large for zip export"))
+}
+
+fn to_u32(value: usize, label: &str) -> Result<u32, String> {
+    u32::try_from(value).map_err(|_| format!("{label} is too large for zip export"))
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff;
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            if crc & 1 == 1 {
+                crc = (crc >> 1) ^ 0xedb8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+fn build_stored_zip(entries: Vec<StoredZipEntry>) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    let mut central_records = Vec::new();
+
+    for entry in entries {
+        let name = normalize_zip_path(&entry.name);
+        if name.is_empty() || name.contains("../") || name.starts_with("../") {
+            return Err(format!("Invalid zip entry path: {name}"));
+        }
+
+        let name_bytes = name.as_bytes().to_vec();
+        let name_len = to_u16(name_bytes.len(), "Zip entry name")?;
+        let size = to_u32(entry.bytes.len(), "Zip entry")?;
+        let offset = to_u32(output.len(), "Zip file")?;
+        let checksum = crc32(&entry.bytes);
+
+        push_u32(&mut output, 0x0403_4b50);
+        push_u16(&mut output, 20);
+        push_u16(&mut output, 0x0800);
+        push_u16(&mut output, 0);
+        push_u16(&mut output, 0);
+        push_u16(&mut output, 0);
+        push_u32(&mut output, checksum);
+        push_u32(&mut output, size);
+        push_u32(&mut output, size);
+        push_u16(&mut output, name_len);
+        push_u16(&mut output, 0);
+        output.extend_from_slice(&name_bytes);
+        output.extend_from_slice(&entry.bytes);
+
+        central_records.push(ZipCentralRecord {
+            name: name_bytes,
+            crc32: checksum,
+            size,
+            offset,
+        });
+    }
+
+    let central_directory_offset = to_u32(output.len(), "Zip central directory offset")?;
+
+    for record in &central_records {
+        let name_len = to_u16(record.name.len(), "Zip central directory name")?;
+        push_u32(&mut output, 0x0201_4b50);
+        push_u16(&mut output, 20);
+        push_u16(&mut output, 20);
+        push_u16(&mut output, 0x0800);
+        push_u16(&mut output, 0);
+        push_u16(&mut output, 0);
+        push_u16(&mut output, 0);
+        push_u32(&mut output, record.crc32);
+        push_u32(&mut output, record.size);
+        push_u32(&mut output, record.size);
+        push_u16(&mut output, name_len);
+        push_u16(&mut output, 0);
+        push_u16(&mut output, 0);
+        push_u16(&mut output, 0);
+        push_u16(&mut output, 0);
+        push_u32(&mut output, 0);
+        push_u32(&mut output, record.offset);
+        output.extend_from_slice(&record.name);
+    }
+
+    let central_directory_size =
+        to_u32(output.len(), "Zip central directory size")? - central_directory_offset;
+    let entry_count = to_u16(central_records.len(), "Zip entry count")?;
+
+    push_u32(&mut output, 0x0605_4b50);
+    push_u16(&mut output, 0);
+    push_u16(&mut output, 0);
+    push_u16(&mut output, entry_count);
+    push_u16(&mut output, entry_count);
+    push_u32(&mut output, central_directory_size);
+    push_u32(&mut output, central_directory_offset);
+    push_u16(&mut output, 0);
+
+    Ok(output)
+}
+
+fn read_stored_zip_entries(bytes: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> {
+    let mut offset = 0;
+    let mut entries = HashMap::new();
+
+    while offset + 4 <= bytes.len() {
+        let signature = read_u32(bytes, offset)?;
+        if signature == 0x0201_4b50 || signature == 0x0605_4b50 {
+            break;
+        }
+        if signature != 0x0403_4b50 {
+            return Err("Unsupported zip file".to_string());
+        }
+
+        let flags = read_u16(bytes, offset + 6)?;
+        let compression_method = read_u16(bytes, offset + 8)?;
+        let compressed_size = read_u32(bytes, offset + 18)? as usize;
+        let uncompressed_size = read_u32(bytes, offset + 22)? as usize;
+        let file_name_length = read_u16(bytes, offset + 26)? as usize;
+        let extra_length = read_u16(bytes, offset + 28)? as usize;
+
+        if flags & 0x0008 != 0 {
+            return Err("Zip files with data descriptors are not supported".to_string());
+        }
+        if compression_method != 0 {
+            return Err("Only store-method zip files are supported".to_string());
+        }
+        if compressed_size != uncompressed_size {
+            return Err("Invalid stored zip entry size".to_string());
+        }
+
+        let name_start = offset + 30;
+        let name_end = name_start + file_name_length;
+        let data_start = name_end + extra_length;
+        let data_end = data_start + compressed_size;
+        let name_bytes = bytes
+            .get(name_start..name_end)
+            .ok_or_else(|| "Invalid zip entry name".to_string())?;
+        let data = bytes
+            .get(data_start..data_end)
+            .ok_or_else(|| "Invalid zip entry data".to_string())?;
+        let name = std::str::from_utf8(name_bytes)
+            .map_err(|_| "Zip entry names must be UTF-8".to_string())?;
+
+        let normalized_name = normalize_zip_path(name);
+        if !normalized_name.ends_with('/') {
+            entries.insert(normalized_name, data.to_vec());
+        }
+
+        offset = data_end;
+    }
+
+    Ok(entries)
+}
+
+fn upsert_imported_tags(
+    connection: &Connection,
+    snippet_id: &str,
+    imported_tags: &[Tag],
+) -> Result<(), String> {
+    connection
+        .execute("DELETE FROM snippet_tags WHERE snippet_id = ?1", [snippet_id])
+        .map_err(|error| error.to_string())?;
+
+    let mut seen = std::collections::HashSet::new();
+    for tag in imported_tags {
+        let name = tag.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        let normalized_name = if tag.normalized_name.trim().is_empty() {
+            normalize_tag_name(name)
+        } else {
+            normalize_tag_name(&tag.normalized_name)
+        };
+
+        if !seen.insert(normalized_name.clone()) {
+            continue;
+        }
+
+        let preferred_id = if tag.id.trim().is_empty() {
+            generate_id("tag")
+        } else {
+            tag.id.clone()
+        };
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO tags (id, name, normalized_name)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(normalized_name) DO UPDATE SET name = excluded.name
+                "#,
+                params![preferred_id.as_str(), name, normalized_name.as_str()],
+            )
+            .map_err(|error| error.to_string())?;
+
+        let tag_id = connection
+            .query_row(
+                "SELECT id FROM tags WHERE normalized_name = ?1",
+                [normalized_name.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| error.to_string())?;
+
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO snippet_tags (snippet_id, tag_id) VALUES (?1, ?2)",
+                params![snippet_id, tag_id.as_str()],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 fn create_snippet(
     input: CreateSnippetInput,
@@ -683,6 +997,271 @@ fn read_attachment_base64(
     Ok(BASE64.encode(bytes))
 }
 
+#[tauri::command]
+fn export_portable_data(
+    state: State<'_, AppState>,
+    db_lock: State<'_, DbLock>,
+) -> Result<PortableExportResult, String> {
+    let _guard = db_lock.0.lock().map_err(|error| error.to_string())?;
+    let connection = open_connection(&state.db_path)?;
+    let all_snippets = search_snippets_inner(
+        &connection,
+        &SearchSnippetsInput {
+            query: String::new(),
+            tags: Vec::new(),
+            sort: "createdAt".to_string(),
+        },
+    )?;
+
+    let allowed_root = state
+        .attachments_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let mut export_snippets = Vec::new();
+    let mut zip_entries = Vec::new();
+    let mut attachment_count = 0;
+
+    for mut snippet in all_snippets {
+        let mut exported_attachments = Vec::new();
+
+        for mut attachment in snippet.attachments {
+            let path = PathBuf::from(&attachment.file_path);
+            let canonical = path.canonicalize().map_err(|error| {
+                format!("Could not read attachment {}: {error}", attachment.file_path)
+            })?;
+            if !canonical.starts_with(&allowed_root) {
+                return Err("Attachment path is outside the application data directory".to_string());
+            }
+
+            let bytes = fs::read(&canonical).map_err(|error| error.to_string())?;
+            let original_file_name = canonical
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(sanitize_file_name)
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}.{}",
+                        sanitize_file_name(&attachment.id),
+                        detect_extension(&attachment.mime_type, &attachment.file_path)
+                    )
+                });
+            let zip_path = format!(
+                "attachments/{}/{}",
+                sanitize_file_name(&snippet.id),
+                original_file_name
+            );
+
+            attachment.file_path = zip_path.clone();
+            exported_attachments.push(attachment);
+            zip_entries.push(StoredZipEntry {
+                name: zip_path,
+                bytes,
+            });
+            attachment_count += 1;
+        }
+
+        snippet.attachments = exported_attachments;
+        export_snippets.push(snippet);
+    }
+
+    let snippet_count = export_snippets.len();
+    let bundle = PortableExportBundle {
+        format: "codestock-portable".to_string(),
+        version: 1,
+        exported_at: now_iso(),
+        snippets: export_snippets,
+    };
+    let bundle_bytes =
+        serde_json::to_vec_pretty(&bundle).map_err(|error| error.to_string())?;
+
+    zip_entries.insert(
+        0,
+        StoredZipEntry {
+            name: "codestock-export.json".to_string(),
+            bytes: bundle_bytes,
+        },
+    );
+
+    let zip_bytes = build_stored_zip(zip_entries)?;
+    fs::create_dir_all(&state.exports_dir).map_err(|error| error.to_string())?;
+
+    let file_name = format!("codestock-export-{}.zip", now_iso());
+    let file_path = state.exports_dir.join(&file_name);
+    fs::write(&file_path, &zip_bytes).map_err(|error| error.to_string())?;
+
+    Ok(PortableExportResult {
+        file_name,
+        file_path: file_path.to_string_lossy().to_string(),
+        bytes_base64: BASE64.encode(zip_bytes),
+        mime_type: "application/zip".to_string(),
+        snippet_count,
+        attachment_count,
+    })
+}
+
+#[tauri::command]
+fn import_portable_data(
+    bytes_base64: String,
+    state: State<'_, AppState>,
+    db_lock: State<'_, DbLock>,
+) -> Result<PortableImportResult, String> {
+    let archive_bytes = BASE64
+        .decode(bytes_base64.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let entries = read_stored_zip_entries(&archive_bytes)?;
+    let bundle_bytes = entries
+        .get("codestock-export.json")
+        .ok_or_else(|| "codestock-export.json was not found in the zip".to_string())?;
+    let bundle: PortableExportBundle =
+        serde_json::from_slice(bundle_bytes).map_err(|error| error.to_string())?;
+
+    if bundle.format != "codestock-portable" || bundle.version != 1 {
+        return Err("Unsupported CodeStock export format".to_string());
+    }
+
+    let _guard = db_lock.0.lock().map_err(|error| error.to_string())?;
+    let mut connection = open_connection(&state.db_path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+
+    let mut imported_snippets = 0;
+    let mut imported_attachments = 0;
+
+    for snippet in bundle.snippets {
+        let snippet_id = if snippet.id.trim().is_empty() {
+            generate_id("snippet")
+        } else {
+            snippet.id.clone()
+        };
+        let code_blocks = normalize_code_blocks(
+            Some(snippet.code_blocks.clone()),
+            &snippet.language,
+            &snippet.code,
+        );
+        let primary = code_blocks
+            .first()
+            .cloned()
+            .unwrap_or(SnippetCodeBlock {
+                id: "block-1".to_string(),
+                language: default_language(),
+                code: String::new(),
+            });
+        let code_blocks_json =
+            serde_json::to_string(&code_blocks).map_err(|error| error.to_string())?;
+        let now = now_iso();
+        let created_at = if snippet.created_at.trim().is_empty() {
+            now.clone()
+        } else {
+            snippet.created_at.clone()
+        };
+        let updated_at = if snippet.updated_at.trim().is_empty() {
+            now
+        } else {
+            snippet.updated_at.clone()
+        };
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO snippets (id, title, code, language, code_blocks, note, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                  title = excluded.title,
+                  code = excluded.code,
+                  language = excluded.language,
+                  code_blocks = excluded.code_blocks,
+                  note = excluded.note,
+                  created_at = excluded.created_at,
+                  updated_at = excluded.updated_at
+                "#,
+                params![
+                    snippet_id.as_str(),
+                    snippet.title.as_str(),
+                    primary.code.as_str(),
+                    primary.language.as_str(),
+                    code_blocks_json.as_str(),
+                    snippet.note.as_str(),
+                    created_at.as_str(),
+                    updated_at.as_str()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+
+        upsert_imported_tags(&transaction, &snippet_id, &snippet.tags)?;
+
+        for mut attachment in snippet.attachments {
+            let zip_path = normalize_zip_path(&attachment.file_path);
+            let bytes = entries
+                .get(&zip_path)
+                .ok_or_else(|| format!("Attachment file missing from zip: {zip_path}"))?;
+            let original_file_name = zip_file_name(&zip_path).unwrap_or_else(|| {
+                format!(
+                    "{}.{}",
+                    sanitize_file_name(&attachment.id),
+                    detect_extension(&attachment.mime_type, &attachment.file_path)
+                )
+            });
+            let output_file_name = if original_file_name.contains('.') {
+                original_file_name
+            } else {
+                format!(
+                    "{}.{}",
+                    original_file_name,
+                    detect_extension(&attachment.mime_type, &attachment.file_path)
+                )
+            };
+            let snippet_dir = state.attachments_dir.join(&snippet_id);
+            fs::create_dir_all(&snippet_dir).map_err(|error| error.to_string())?;
+            let output_path = snippet_dir.join(sanitize_file_name(&output_file_name));
+            fs::write(&output_path, bytes).map_err(|error| error.to_string())?;
+
+            attachment.file_path = output_path.to_string_lossy().to_string();
+            let attachment_snippet_id = snippet_id.clone();
+            let attachment_created_at = if attachment.created_at.trim().is_empty() {
+                updated_at.clone()
+            } else {
+                attachment.created_at.clone()
+            };
+
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO attachments (id, snippet_id, file_path, mime_type, width, height, created_at)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    ON CONFLICT(id) DO UPDATE SET
+                      snippet_id = excluded.snippet_id,
+                      file_path = excluded.file_path,
+                      mime_type = excluded.mime_type,
+                      width = excluded.width,
+                      height = excluded.height,
+                      created_at = excluded.created_at
+                    "#,
+                    params![
+                        attachment.id.as_str(),
+                        attachment_snippet_id.as_str(),
+                        attachment.file_path.as_str(),
+                        attachment.mime_type.as_str(),
+                        attachment.width,
+                        attachment.height,
+                        attachment_created_at.as_str()
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            imported_attachments += 1;
+        }
+
+        imported_snippets += 1;
+    }
+
+    transaction.commit().map_err(|error| error.to_string())?;
+
+    Ok(PortableImportResult {
+        imported_snippets,
+        imported_attachments,
+    })
+}
+
 fn app_state(app: &AppHandle) -> Result<AppState, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
@@ -690,12 +1269,16 @@ fn app_state(app: &AppHandle) -> Result<AppState, String> {
     let attachments_dir = app_data_dir.join("attachments");
     fs::create_dir_all(&attachments_dir).map_err(|error| error.to_string())?;
 
+    let exports_dir = app_data_dir.join("exports");
+    fs::create_dir_all(&exports_dir).map_err(|error| error.to_string())?;
+
     let db_path = app_data_dir.join("codestock.sqlite");
     let _ = open_connection(&db_path)?;
 
     Ok(AppState {
         db_path,
         attachments_dir,
+        exports_dir,
     })
 }
 
@@ -713,7 +1296,9 @@ fn main() {
             search_snippets,
             list_tags,
             attach_image_from_clipboard,
-            read_attachment_base64
+            read_attachment_base64,
+            export_portable_data,
+            import_portable_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeStock");
