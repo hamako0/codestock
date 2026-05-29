@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createSnippetRepository } from "../lib/repositories/snippetRepository";
+import { normalizeTagName } from "../lib/utils";
 import type {
   ClipboardAttachmentDraft,
   CreateSnippetInput,
@@ -20,7 +21,12 @@ export function useCodeStock() {
   const [availableTags, setAvailableTags] = useState<Tag[]>([]);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
 
-  async function reload(nextQuery = query, nextTags = selectedTags, nextSort = sort) {
+  async function reload(
+    nextQuery = query,
+    nextTags = selectedTags,
+    nextSort = sort,
+    nextSelectedSnippetId = selectedSnippetId
+  ) {
     const [foundSnippets, foundTags] = await Promise.all([
       repository.searchSnippets({ query: nextQuery, tags: nextTags, sort: nextSort }),
       repository.listTags("")
@@ -29,13 +35,11 @@ export function useCodeStock() {
     setSnippets(foundSnippets);
     setAvailableTags(foundTags);
 
-    if (!selectedSnippetId && foundSnippets[0]) {
-      setSelectedSnippetId(foundSnippets[0].id);
-    } else if (
-      selectedSnippetId &&
-      !foundSnippets.some((snippet) => snippet.id === selectedSnippetId)
+    if (
+      nextSelectedSnippetId &&
+      !foundSnippets.some((snippet) => snippet.id === nextSelectedSnippetId)
     ) {
-      setSelectedSnippetId(foundSnippets[0]?.id ?? null);
+      setSelectedSnippetId(null);
     }
   }
 
@@ -45,14 +49,27 @@ export function useCodeStock() {
 
   async function createSnippet(input: CreateSnippetInput) {
     const created = await repository.createSnippet(input);
+    await reload(query, selectedTags, sort, created.id);
     setSelectedSnippetId(created.id);
-    await reload();
     return created;
   }
 
   async function updateSnippet(id: string, input: UpdateSnippetInput) {
     await repository.updateSnippet(id, input);
     await reload();
+  }
+
+  async function deleteSnippet(id: string) {
+    await repository.deleteSnippet(id);
+    const foundTags = await repository.listTags("");
+    const remainingTags = new Set(foundTags.map((tag) => normalizeTagName(tag.name)));
+    const nextTags = selectedTags.filter((tag) => remainingTags.has(normalizeTagName(tag)));
+
+    setQuery("");
+    setSelectedTags(nextTags);
+    setSelectedSnippetId(null);
+    setAvailableTags(foundTags);
+    setSnippets(await repository.searchSnippets({ query: "", tags: nextTags, sort }));
   }
 
   async function attachImageFromClipboard(draft: ClipboardAttachmentDraft, snippetId: string) {
@@ -99,6 +116,7 @@ export function useCodeStock() {
     reload,
     createSnippet,
     updateSnippet,
+    deleteSnippet,
     attachImageFromClipboard,
     exportPortableData,
     importPortableData

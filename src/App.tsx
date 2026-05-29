@@ -1,12 +1,17 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { DataPortability } from "./components/DataPortability";
 import { SnippetComposer } from "./components/SnippetComposer";
+import { SnippetDetail } from "./components/SnippetDetail";
 import { SnippetList } from "./components/SnippetList";
-import { SnippetPreview } from "./components/SnippetPreview";
 import { useCodeStock } from "./hooks/useCodeStock";
+import type { CreateSnippetInput } from "./types";
 
 export function App() {
   const stock = useCodeStock();
+  const [showDraftComposer, setShowDraftComposer] = useState(false);
+  const hasActiveSearch = stock.query.trim().length > 0 || stock.selectedTags.length > 0;
+  const hasSelectedSnippet = Boolean(stock.selectedSnippet);
+  const showDetail = hasSelectedSnippet || showDraftComposer;
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -15,6 +20,32 @@ export function App() {
 
     return () => window.clearTimeout(timeout);
   }, [stock.query, stock.selectedTags, stock.sort]);
+
+  function handleSelectSnippet(id: string) {
+    setShowDraftComposer(false);
+    stock.setSelectedSnippetId(id);
+  }
+
+  function handleBackToResults() {
+    setShowDraftComposer(false);
+    stock.setSelectedSnippetId(null);
+  }
+
+  function handleBeginNewSnippet() {
+    stock.beginNewSnippet();
+    setShowDraftComposer(true);
+  }
+
+  async function handleCreateSnippet(input: CreateSnippetInput) {
+    const created = await stock.createSnippet(input);
+    setShowDraftComposer(false);
+    return created;
+  }
+
+  async function handleDeleteSnippet(id: string) {
+    await stock.deleteSnippet(id);
+    setShowDraftComposer(false);
+  }
 
   return (
     <main className="appShell">
@@ -49,24 +80,14 @@ export function App() {
         </div>
       </section>
 
-      <section className="workspaceGrid">
-        <SnippetComposer
-          availableTags={stock.availableTags}
-          selectedSnippet={stock.selectedSnippet}
-          onBeginNewSnippet={stock.beginNewSnippet}
-          onCreateSnippet={stock.createSnippet}
-          onUpdateSnippet={stock.updateSnippet}
-          onAttachImageFromClipboard={stock.attachImageFromClipboard}
-          onRefreshTags={stock.refreshTags}
-        />
-
+      <section className={getWorkspaceClassName(hasActiveSearch, showDetail)}>
         <SnippetList
           query={stock.query}
           selectedTags={stock.selectedTags}
           sort={stock.sort}
           snippets={stock.snippets}
           availableTags={stock.availableTags}
-          selectedSnippetId={stock.selectedSnippetId}
+          showResults={hasActiveSearch && !showDetail}
           onQueryChange={stock.setQuery}
           onToggleTag={(tag) => {
             stock.setSelectedTags(
@@ -76,11 +97,56 @@ export function App() {
             );
           }}
           onSortChange={stock.setSort}
-          onSelectSnippet={stock.setSelectedSnippetId}
+          onSelectSnippet={handleSelectSnippet}
+          onBeginNewSnippet={handleBeginNewSnippet}
         />
 
-        <SnippetPreview snippet={stock.selectedSnippet} />
+        {showDetail && (
+          <div className={hasSelectedSnippet ? "selectedWorkspace" : "selectedWorkspace draftWorkspace"}>
+            {stock.selectedSnippet ? (
+              <SnippetDetail
+                snippet={stock.selectedSnippet}
+                onBack={handleBackToResults}
+                onDelete={handleDeleteSnippet}
+              />
+            ) : (
+              <section className="panel detailPanel">
+                <div className="panelHeader">
+                  <div>
+                    <p className="eyebrow">Capture</p>
+                    <h2>New Draft</h2>
+                  </div>
+                  <button className="ghostButton" onClick={handleBackToResults}>
+                    Back to results
+                  </button>
+                </div>
+              </section>
+            )}
+
+            <SnippetComposer
+              availableTags={stock.availableTags}
+              selectedSnippet={stock.selectedSnippet}
+              onBeginNewSnippet={handleBeginNewSnippet}
+              onCreateSnippet={handleCreateSnippet}
+              onUpdateSnippet={stock.updateSnippet}
+              onAttachImageFromClipboard={stock.attachImageFromClipboard}
+              onRefreshTags={stock.refreshTags}
+            />
+          </div>
+        )}
       </section>
     </main>
   );
+}
+
+function getWorkspaceClassName(hasActiveSearch: boolean, showDetail: boolean): string {
+  if (showDetail) {
+    return "workspaceFlow detailMode";
+  }
+
+  if (hasActiveSearch) {
+    return "workspaceFlow resultsMode";
+  }
+
+  return "workspaceFlow initialMode";
 }

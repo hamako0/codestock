@@ -42,6 +42,7 @@ export async function invokeIfAvailable<T>(
 export interface NativeSnippetBridge {
   createSnippet(input: CreateSnippetInput): Promise<Snippet>;
   updateSnippet(id: string, input: UpdateSnippetInput): Promise<Snippet>;
+  deleteSnippet(id: string): Promise<void>;
   searchSnippets(input: SearchSnippetsInput): Promise<Snippet[]>;
   listTags(keyword: string): Promise<Tag[]>;
   attachImageFromClipboard(draft: ClipboardAttachmentDraft, snippetId: string): Promise<Snippet>;
@@ -65,6 +66,12 @@ export function createNativeSnippetBridge(): NativeSnippetBridge {
         throw new Error("Tauri bridge unavailable");
       }
       return snippet;
+    },
+    async deleteSnippet(id) {
+      const deleted = await invokeIfAvailable<boolean>("delete_snippet", { id });
+      if (!deleted) {
+        throw new Error("Tauri bridge unavailable");
+      }
     },
     async searchSnippets(input) {
       const snippets = await invokeIfAvailable<Snippet[]>("search_snippets", { input });

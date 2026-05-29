@@ -83,22 +83,6 @@ export function SnippetPreview({ snippet }: SnippetPreviewProps) {
 
       {snippet.note && <div className="previewNote">{renderNote(snippet.note, attachmentSources)}</div>}
 
-      <div className="previewBlocks">
-        {snippet.codeBlocks.map((block, index) => (
-          <div key={block.id} className="previewBlockCard">
-            <div className="previewBlockHeader">
-              <span className="metaStamp">
-                {block.language}
-                {snippet.codeBlocks.length > 1 ? ` / Block ${index + 1}` : ""}
-              </span>
-            </div>
-            <pre className="previewCode">
-              <code>{block.code}</code>
-            </pre>
-          </div>
-        ))}
-      </div>
-
       {snippet.attachments.length > 0 && (
         <div className="attachmentGrid">
           {snippet.attachments.map((attachment) => {

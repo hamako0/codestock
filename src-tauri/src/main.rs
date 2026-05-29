@@ -879,6 +879,50 @@ fn update_snippet(
 }
 
 #[tauri::command]
+fn delete_snippet(
+    id: String,
+    state: State<'_, AppState>,
+    db_lock: State<'_, DbLock>,
+) -> Result<bool, String> {
+    let _guard = db_lock.0.lock().map_err(|error| error.to_string())?;
+    let connection = open_connection(&state.db_path)?;
+    let snippet = load_snippet(&connection, &id)?;
+
+    connection
+        .execute("DELETE FROM snippets WHERE id = ?1", [id.as_str()])
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM snippet_tags)",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+
+    let allowed_root = state
+        .attachments_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+
+    for attachment in snippet.attachments {
+        let path = PathBuf::from(&attachment.file_path);
+        if let Ok(canonical) = path.canonicalize() {
+            if canonical.starts_with(&allowed_root) {
+                let _ = fs::remove_file(canonical);
+            }
+        }
+    }
+
+    let snippet_dir = state.attachments_dir.join(&id);
+    if let Ok(canonical) = snippet_dir.canonicalize() {
+        if canonical.starts_with(&allowed_root) {
+            let _ = fs::remove_dir_all(canonical);
+        }
+    }
+
+    Ok(true)
+}
+
+#[tauri::command]
 fn search_snippets(
     input: SearchSnippetsInput,
     state: State<'_, AppState>,
@@ -1293,6 +1337,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             create_snippet,
             update_snippet,
+            delete_snippet,
             search_snippets,
             list_tags,
             attach_image_from_clipboard,

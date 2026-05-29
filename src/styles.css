@@ -105,15 +105,35 @@ button {
   color: #6b7280;
 }
 
-.workspaceGrid {
+.workspaceFlow {
   display: grid;
-  grid-template-columns: 1.2fr 1fr 1fr;
   gap: 18px;
+}
+
+.initialMode .listPanel {
+  width: min(780px, 100%);
+  justify-self: center;
+}
+
+.selectedWorkspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(420px, 1.15fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.draftWorkspace {
+  grid-template-columns: minmax(220px, 0.45fr) minmax(420px, 1fr);
 }
 
 .panel {
   padding: 18px;
   min-height: 600px;
+}
+
+.listPanel,
+.detailPanel {
+  min-height: auto;
 }
 
 .panelHeader {
@@ -127,6 +147,8 @@ button {
 .actionRow {
   display: flex;
   gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .panelHeader h2 {
@@ -212,6 +234,24 @@ button {
   background: rgba(255, 255, 255, 0.7);
 }
 
+.dangerButton {
+  border: 1px solid rgba(170, 45, 45, 0.22);
+  border-radius: 999px;
+  padding: 12px 16px;
+  background: #fff0ed;
+  color: #9f2f25;
+  font-weight: 700;
+}
+
+.dangerButton:hover {
+  background: #ffe2dc;
+}
+
+.dangerButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
 .addBlockButton {
   margin-top: 12px;
 }
@@ -243,9 +283,10 @@ button {
   color: #5d6a79;
 }
 
-.snippetCards {
+.candidateGrid {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
   margin-top: 16px;
 }
 
@@ -264,8 +305,12 @@ button {
 }
 
 .snippetCard {
+  display: grid;
+  align-content: start;
+  gap: 12px;
   text-align: left;
   width: 100%;
+  min-height: 190px;
   border: 1px solid rgba(24, 34, 47, 0.08);
   border-radius: 18px;
   padding: 14px;
@@ -282,15 +327,99 @@ button {
   justify-content: space-between;
   align-items: start;
   gap: 12px;
-  margin-bottom: 10px;
 }
 
-.snippetCardActions {
+.snippetVisualNote,
+.noteAttachmentCard {
+  display: grid;
+  gap: 10px;
+}
+
+.noteText {
+  margin: 0;
+  color: #4e5d6f;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.candidateVisualNote .noteText {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.emptyNote {
+  color: #8a94a3;
+}
+
+.embeddedNoteImage,
+.noteAttachmentCard img {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 34, 47, 0.08);
+  background: white;
+  object-fit: cover;
+}
+
+.candidateNoteImage,
+.candidateAttachmentGrid .noteAttachmentCard img {
+  aspect-ratio: 16 / 10;
+  max-height: 180px;
+}
+
+.detailNoteImage,
+.detailAttachmentGrid .noteAttachmentCard img {
+  max-height: 420px;
+  object-fit: contain;
+}
+
+.noteImageToken {
+  margin: 0;
+  font-family: "IBM Plex Mono", "Consolas", monospace;
+  color: #8a94a3;
+  overflow-wrap: anywhere;
+}
+
+.noteAttachmentGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.candidateAttachmentGrid {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.detailAttachmentGrid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.noteAttachmentCard {
+  margin: 0;
+}
+
+.noteAttachmentCard figcaption {
+  color: #6b7280;
+}
+
+.candidateTags {
+  margin-top: auto;
+}
+
+.candidateGrid .emptyState {
+  grid-column: 1 / -1;
+}
+
+.detailPanel .snippetVisualNote {
+  margin-top: 14px;
+}
+
+.copyActionGrid {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-top: 16px;
 }
 
 .copyButton {
@@ -312,7 +441,6 @@ button {
   outline-offset: 2px;
 }
 
-.snippetCard p,
 .previewNote,
 .emptyState p {
   color: #4e5d6f;
@@ -387,7 +515,8 @@ button {
 
 @media (max-width: 1100px) {
   .hero,
-  .workspaceGrid {
+  .candidateGrid,
+  .selectedWorkspace {
     grid-template-columns: 1fr;
   }
 

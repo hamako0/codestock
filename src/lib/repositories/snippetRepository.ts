@@ -1,4 +1,10 @@
 import { loadState, saveState } from "../storage/localDb";
+import {
+  deleteAttachmentPayload,
+  migrateLegacyAttachmentPayloads,
+  readAttachmentPayload,
+  saveAttachmentPayload
+} from "../storage/attachmentStore";
 import { DEFAULT_SNIPPET_LANGUAGE } from "../constants";
 import { base64ToText, generateId, normalizeTagName, textToBase64 } from "../utils";
 import type {
@@ -17,6 +23,7 @@ import { createNativeSnippetBridge, isTauriRuntime } from "../bridge/tauri";
 export interface SnippetRepository {
   createSnippet(input: CreateSnippetInput): Promise<Snippet>;
   updateSnippet(id: string, input: UpdateSnippetInput): Promise<Snippet>;
+  deleteSnippet(id: string): Promise<void>;
   searchSnippets(input: SearchSnippetsInput): Promise<Snippet[]>;
   listTags(keyword: string): Promise<Tag[]>;
   attachImageFromClipboard(draft: ClipboardAttachmentDraft, snippetId: string): Promise<Snippet>;
@@ -107,8 +114,11 @@ function buildAttachment(snippetId: string, draft: ClipboardAttachmentDraft): At
   };
 }
 
-function persistAttachmentPayload(attachmentId: string, draft: ClipboardAttachmentDraft): void {
-  window.localStorage.setItem(`codestock:attachment:${attachmentId}`, draft.bytesBase64);
+async function persistAttachmentPayload(
+  attachmentId: string,
+  draft: ClipboardAttachmentDraft
+): Promise<void> {
+  await saveAttachmentPayload(attachmentId, draft.bytesBase64);
 }
 
 function normalizeSnippet(snippet: Snippet): Snippet {
@@ -143,8 +153,11 @@ function normalizeCodeBlocks(
   ];
 }
 
-export function readAttachmentDataUrl(attachmentId: string, mimeType: string): string | null {
-  const base64 = window.localStorage.getItem(`codestock:attachment:${attachmentId}`);
+export async function readAttachmentDataUrl(
+  attachmentId: string,
+  mimeType: string
+): Promise<string | null> {
+  const base64 = await readAttachmentPayload(attachmentId);
   if (!base64) {
     return null;
   }
@@ -165,13 +178,13 @@ export async function readAttachmentPreviewSrc(attachment: Attachment): Promise<
   return `data:${attachment.mimeType};base64,${base64}`;
 }
 
-function exportBrowserData(): PortableExportResult {
+async function exportBrowserData(): Promise<PortableExportResult> {
   const state = loadState();
   const attachmentPayloads: Record<string, string> = {};
 
   for (const snippet of state.snippets) {
     for (const attachment of snippet.attachments) {
-      const payload = window.localStorage.getItem(`codestock:attachment:${attachment.id}`);
+      const payload = await readAttachmentPayload(attachment.id);
       if (payload) {
         attachmentPayloads[attachment.id] = payload;
       }
@@ -196,7 +209,7 @@ function exportBrowserData(): PortableExportResult {
   };
 }
 
-function importBrowserData(bytesBase64: string): PortableImportResult {
+async function importBrowserData(bytesBase64: string): Promise<PortableImportResult> {
   const bundle = JSON.parse(base64ToText(bytesBase64)) as BrowserExportBundle;
   if (bundle.format !== "codestock-browser-json" || bundle.version !== 1) {
     throw new Error("This import file is supported by the desktop app only.");
@@ -212,7 +225,7 @@ function importBrowserData(bytesBase64: string): PortableImportResult {
     ]
   });
   for (const [attachmentId, payload] of Object.entries(bundle.attachmentPayloads)) {
-    window.localStorage.setItem(`codestock:attachment:${attachmentId}`, payload);
+    await saveAttachmentPayload(attachmentId, payload);
   }
 
   return {
@@ -269,6 +282,27 @@ export function createSnippetRepository(): SnippetRepository {
       return nextSnippet;
     },
 
+    async deleteSnippet(id) {
+      if (nativeBridge) {
+        await nativeBridge.deleteSnippet(id);
+        return;
+      }
+
+      const state = loadState();
+      const target = state.snippets.find((snippet) => snippet.id === id);
+      if (!target) {
+        return;
+      }
+
+      for (const attachment of target.attachments) {
+        await deleteAttachmentPayload(attachment.id);
+      }
+
+      saveState({
+        snippets: state.snippets.filter((snippet) => snippet.id !== id)
+      });
+    },
+
     async searchSnippets(input) {
       if (nativeBridge) {
         return (await nativeBridge.searchSnippets(input)).map(normalizeSnippet);
@@ -301,8 +335,13 @@ export function createSnippetRepository(): SnippetRepository {
       }
 
       const current = ensureSnippet(snippetId);
+      await migrateLegacyAttachmentPayloads(
+        loadState().snippets.flatMap((snippet) =>
+          snippet.attachments.map((attachment) => attachment.id)
+        )
+      );
       const attachment = buildAttachment(snippetId, draft);
-      persistAttachmentPayload(attachment.id, draft);
+      await persistAttachmentPayload(attachment.id, draft);
       const nextSnippet: Snippet = {
         ...current,
         attachments: [attachment, ...current.attachments],

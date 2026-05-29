@@ -132,6 +132,7 @@ export function SnippetComposer({
       return;
     }
 
+    try {
     const base64 = await blobToBase64(file);
     const dataUrl = `data:${file.type};base64,${base64}`;
     const dimensions = await measureImage(dataUrl);
@@ -184,6 +185,9 @@ export function SnippetComposer({
       note: nextNote,
     });
     setStatus("Image embedded into note.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Image could not be saved.");
+    }
   }
 
   const suggestedTags = availableTags.filter((tag) =>
