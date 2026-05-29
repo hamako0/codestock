@@ -202,7 +202,15 @@ function importBrowserData(bytesBase64: string): PortableImportResult {
     throw new Error("This import file is supported by the desktop app only.");
   }
 
-  saveState({ snippets: bundle.snippets.map(normalizeSnippet) });
+  const current = loadState().snippets;
+  const imported = bundle.snippets.map(normalizeSnippet);
+  const importedIds = new Set(imported.map((snippet) => snippet.id));
+  saveState({
+    snippets: [
+      ...imported,
+      ...current.filter((snippet) => !importedIds.has(snippet.id))
+    ]
+  });
   for (const [attachmentId, payload] of Object.entries(bundle.attachmentPayloads)) {
     window.localStorage.setItem(`codestock:attachment:${attachmentId}`, payload);
   }
